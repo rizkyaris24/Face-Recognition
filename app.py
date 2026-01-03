@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import time
 from datetime import datetime
 
 def load_face_model():
@@ -162,115 +163,175 @@ def main():
     else:
         print("❌ Gender detection disabled")
     
-    # Open webcam (0 refers to the default webcam)
-    cap = cv2.VideoCapture(0)
+    # Try to open webcam - try multiple camera indices
+    cap = None
+    camera_index = 0
     
-    # Check if webcam is accessible
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
+    print("\n📹 Attempting to access camera...")
+    for i in range(3):  # Try camera indices 0, 1, 2
+        print(f"   Trying camera index {i}...")
+        test_cap = cv2.VideoCapture(i)
+        if test_cap.isOpened():
+            # Test if we can actually read a frame
+            test_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            ret, test_frame = test_cap.read()
+            if ret and test_frame is not None:
+                cap = test_cap
+                camera_index = i
+                print(f"   ✅ Camera {i} is working!")
+                break
+            else:
+                test_cap.release()
+        else:
+            if test_cap:
+                test_cap.release()
+    
+    if cap is None:
+        print("❌ Error: Could not open any camera.")
+        print("   Please check:")
+        print("   - Camera permissions are granted")
+        print("   - Camera is not being used by another application")
+        print("   - Camera is properly connected")
         return
     
-    print("\nFace detection started!")
+    # Configure camera properties for better compatibility
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    
+    # Give camera a moment to initialize
+    print("   Initializing camera...")
+    time.sleep(0.5)
+    
+    # Warm up the camera by reading a few frames
+    for _ in range(5):
+        cap.read()
+    
+    # Determine window title early
+    window_title = "Enhanced Face Detection"
+    features = []
+    if use_age:
+        features.append("Age")
+    if use_gender:
+        features.append("Gender")
+    if features:
+        window_title += f" with {' & '.join(features)} Prediction"
+    
+    # Create window BEFORE the loop (important for macOS)
+    cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_title, 800, 600)
+    cv2.moveWindow(window_title, 100, 100)
+    
+    print("\n✅ Face detection started!")
+    print(f"🖼️  Camera window: '{window_title}'")
     print("Controls:")
-    print("- Press 'q' to quit")
-    print("- Press 's' to save screenshot")
+    print("- Press 'q' in the camera window to quit")
+    print("- Press 's' in the camera window to save screenshot")
+    print("- Or press Ctrl+C in terminal to quit")
+    print("- 💡 If window is behind other apps, check your Dock or use Cmd+Tab")
     
     frame_count = 0
+    consecutive_errors = 0
+    max_consecutive_errors = 10
     
-    while True:
-        # Capture frame from webcam
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Could not read frame.")
-            break
-        
-        frame_count += 1
-        
-        # Detect faces using appropriate method
-        if use_dnn:
-            face_boxes = detect_faces(face_net, frame)
-        else:
-            face_boxes = detect_faces_haar(frame)
-        
-        # Process each detected face
-        face_count = len(face_boxes)
-        for i, (x1, y1, x2, y2) in enumerate(face_boxes):
-            # Draw rectangle around face
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    try:
+        while True:
+            # Capture frame from webcam
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"\n❌ Error: Could not read frame after {max_consecutive_errors} attempts.")
+                    print("   Camera may have been disconnected or is in use.")
+                    break
+                time.sleep(0.1)  # Brief pause before retry
+                continue
             
-            # Add face number
-            cv2.putText(frame, f"Face {i+1}", (x1, y1-40), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            consecutive_errors = 0  # Reset error counter on success
             
-            # Estimate distance/size
-            distance = estimate_face_size([x1, y1, x2, y2])
-            cv2.putText(frame, f"Distance: {distance}", (x1, y1-20), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            frame_count += 1
+        
+            # Detect faces using appropriate method
+            if use_dnn:
+                face_boxes = detect_faces(face_net, frame)
+            else:
+                face_boxes = detect_faces_haar(frame)
             
-            # Age and Gender prediction if available
-            if use_age or use_gender:
-                face = frame[max(0, y1-20):min(y2+20, frame.shape[0]-1), 
-                            max(0, x1-20):min(x2+20, frame.shape[1]-1)]
+            # Process each detected face
+            face_count = len(face_boxes)
+            for i, (x1, y1, x2, y2) in enumerate(face_boxes):
+                # Draw rectangle around face
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 
-                if face.size > 0:
-                    predictions = []
+                # Add face number
+                cv2.putText(frame, f"Face {i+1}", (x1, y1-40), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                
+                # Estimate distance/size
+                distance = estimate_face_size([x1, y1, x2, y2])
+                cv2.putText(frame, f"Distance: {distance}", (x1, y1-20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # Age and Gender prediction if available
+                if use_age or use_gender:
+                    face = frame[max(0, y1-20):min(y2+20, frame.shape[0]-1), 
+                                max(0, x1-20):min(x2+20, frame.shape[1]-1)]
                     
-                    # Age prediction
-                    if use_age:
-                        try:
-                            age = predict_age(face, age_net)
-                            predictions.append(f"Age: {age}")
-                        except Exception as e:
-                            print(f"Error predicting age: {e}")
-                    
-                    # Gender prediction
-                    if use_gender:
-                        try:
-                            gender = predict_gender(face, gender_net)
-                            predictions.append(f"Gender: {gender}")
-                        except Exception as e:
-                            print(f"Error predicting gender: {e}")
-                    
-                    # Display predictions
-                    for idx, prediction in enumerate(predictions):
-                        y_offset = y2 + 20 + (idx * 25)
-                        cv2.putText(frame, prediction, (x1, y_offset), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    if face.size > 0:
+                        predictions = []
+                        
+                        # Age prediction
+                        if use_age:
+                            try:
+                                age = predict_age(face, age_net)
+                                predictions.append(f"Age: {age}")
+                            except Exception as e:
+                                print(f"Error predicting age: {e}")
+                        
+                        # Gender prediction
+                        if use_gender:
+                            try:
+                                gender = predict_gender(face, gender_net)
+                                predictions.append(f"Gender: {gender}")
+                            except Exception as e:
+                                print(f"Error predicting gender: {e}")
+                        
+                        # Display predictions
+                        for idx, prediction in enumerate(predictions):
+                            y_offset = y2 + 20 + (idx * 25)
+                            cv2.putText(frame, prediction, (x1, y_offset), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # Display face count and frame info
+            cv2.putText(frame, f"Faces: {face_count}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            cv2.putText(frame, f"Frame: {frame_count}", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            
+            # Display the frame
+            cv2.imshow(window_title, frame)
+            
+            # Handle key presses and process window events (needed for display on macOS)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q') or key == 27:  # 'q' or ESC key
+                print("\n🛑 Quitting...")
+                break
+            elif key == ord('s'):
+                # Save screenshot
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"screenshot_{timestamp}.jpg"
+                cv2.imwrite(filename, frame)
+                print(f"📸 Screenshot saved as {filename}")
         
-        # Display face count and frame info
-        cv2.putText(frame, f"Faces: {face_count}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        
-        cv2.putText(frame, f"Frame: {frame_count}", (10, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        
-        # Display the frame
-        window_title = "Enhanced Face Detection"
-        features = []
-        if use_age:
-            features.append("Age")
-        if use_gender:
-            features.append("Gender")
-        if features:
-            window_title += f" with {' & '.join(features)} Prediction"
-        
-        cv2.imshow(window_title, frame)
-        
-        # Handle key presses
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('s'):
-            # Save screenshot
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"screenshot_{timestamp}.jpg"
-            cv2.imwrite(filename, frame)
-            print(f"Screenshot saved as {filename}")
-    
-    # Release the webcam and close all windows
-    cap.release()
-    cv2.destroyAllWindows()
-    print("Face detection stopped.")
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrupted by user (Ctrl+C)")
+    finally:
+        # Release the webcam and close all windows
+        if cap is not None:
+            cap.release()
+        cv2.destroyAllWindows()
+        print("✅ Face detection stopped. Camera released.")
 
 if __name__ == "__main__":
     main()
